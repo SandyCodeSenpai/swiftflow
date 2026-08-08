@@ -14,6 +14,15 @@ final class AudioCapture {
         interleaved: true
     )!
 
+    /// Preallocates audio I/O resources so the next start() is near-instant
+    /// instead of paying the hardware spin-up cost mid-dictation.
+    func warmUp() {
+        // prepare() throws an NSException unless the engine has an I/O node;
+        // touching inputNode instantiates it.
+        _ = engine.inputNode
+        engine.prepare()
+    }
+
     func start() throws {
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
@@ -54,5 +63,6 @@ final class AudioCapture {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         converter = nil
+        engine.prepare()
     }
 }

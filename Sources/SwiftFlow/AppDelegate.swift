@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private enum State { case idle, recording, processing }
@@ -13,6 +14,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var config: Config!
     private var cleanupEnabled = true
     private var soundsEnabled = true
+    private var sessionID = 0
+    private var recordingStartedAt: Date?
+    private var durations: [Int: Double] = [:]
+    private var historyWindow: NSWindow?
     private var state: State = .idle { didSet { updateStatusIcon() } }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -33,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.write("launched; accessibility trusted=\(AXIsProcessTrusted())")
         setupStatusItem()
         requestPermissions()
+        audio.warmUp()
 
         hotkey.onPress = { [weak self] in self?.startDictation() }
         hotkey.onRelease = { [weak self] in self?.stopDictation() }
@@ -58,7 +64,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Dictation flow
 
     private func startDictation() {
-        guard state == .idle else { return }
+        // A previous dictation may still be flushing/cleaning up; don't make the
+        // user wait for it — start a fresh session and let the old one finish
+        // in the background (its text still gets injected when it arrives).
+        guard state != .recording else { return }
+        if state == .processing {
+            Log.write("hotkey pressed while previous dictation still processing")
+        }
+        sessionID += 1
+        let id = sessionID
+        let startedAt = Date()
+        recordingStartedAt = startedAt
         state = .recording
         Log.write("hotkey pressed — recording")
         playSound("Pop")
@@ -66,7 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let client = DeepgramClient(apiKey: config.deepgramApiKey)
         deepgram = client
         client.onFinalTranscript = { [weak self] transcript in
-            self?.handleTranscript(transcript)
+            self?.handleTranscript(transcript, session: id, startedAt: startedAt)
         }
         client.connect()
 
@@ -83,32 +99,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func stopDictation() {
         guard state == .recording else { return }
         state = .processing
+        if let startedAt = recordingStartedAt {
+            durations[sessionID] = Date().timeIntervalSince(startedAt)
+        }
         Log.write("hotkey released — finishing")
         audio.stop()
         deepgram?.finish()
     }
 
-    private func handleTranscript(_ transcript: String) {
-        deepgram = nil
+    private func handleTranscript(_ transcript: String, session id: Int, startedAt: Date) {
+        // A newer dictation may have started while this one was flushing;
+        // stale sessions still inject their text but must not touch state.
+        let isCurrent = id == sessionID
+        if isCurrent { deepgram = nil }
+        let duration = durations.removeValue(forKey: id) ?? 0
         let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         Log.write("transcript received (\(text.count) chars)")
         guard !text.isEmpty else {
-            playSound("Basso")  // nothing captured — let the user know
-            state = .idle
+            if isCurrent {
+                playSound("Basso")  // nothing captured — let the user know
+                state = .idle
+            }
             return
         }
         if cleanupEnabled, !config.cerebrasApiKey.isEmpty {
             let cerebras = CerebrasClient(apiKey: config.cerebrasApiKey,
-                                          model: config.cerebrasModel ?? "llama-3.3-70b")
+                                          model: config.cerebrasModel ?? "gpt-oss-120b")
             cerebras.cleanup(text) { [weak self] cleaned in
+                guard let self else { return }
                 TextInjector.inject(cleaned)
-                self?.playSound("Tink")
-                self?.state = .idle
+                TranscriptStore.shared.save(raw: text, cleaned: cleaned,
+                                            duration: duration, at: startedAt)
+                if id == self.sessionID {
+                    self.playSound("Tink")
+                    self.state = .idle
+                }
             }
         } else {
             TextInjector.inject(text)
-            playSound("Tink")
-            state = .idle
+            TranscriptStore.shared.save(raw: text, cleaned: nil,
+                                        duration: duration, at: startedAt)
+            if isCurrent {
+                playSound("Tink")
+                state = .idle
+            }
         }
     }
 
@@ -125,6 +159,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(withTitle: "Hold Right ⌥ to dictate", action: nil, keyEquivalent: "")
+        menu.addItem(.separator())
+        let historyItem = NSMenuItem(title: "Transcript History…",
+                                     action: #selector(openHistory), keyEquivalent: "h")
+        historyItem.target = self
+        menu.addItem(historyItem)
         menu.addItem(.separator())
         cleanupMenuItem = NSMenuItem(title: "AI Cleanup (Cerebras)",
                                      action: #selector(toggleCleanup), keyEquivalent: "")
@@ -161,6 +200,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.image = image
         button.title = ""
         button.contentTintColor = tint
+    }
+
+    @objc private func openHistory() {
+        if historyWindow == nil {
+            let hosting = NSHostingController(rootView: HistoryView(store: .shared))
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "SwiftFlow"
+            window.setContentSize(NSSize(width: 560, height: 680))
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable,
+                                .fullSizeContentView]
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.isMovableByWindowBackground = true
+            window.isReleasedWhenClosed = false
+            window.minSize = NSSize(width: 480, height: 520)
+            window.center()
+            historyWindow = window
+        }
+        historyWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func toggleCleanup() {
