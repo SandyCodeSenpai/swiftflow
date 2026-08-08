@@ -1,0 +1,5 @@
+.build/
+SwiftFlow.app/
+.DS_Store
+*.log
+.swiftpm/
