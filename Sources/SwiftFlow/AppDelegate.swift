@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var cleanupMenuItem: NSMenuItem!
     private var soundsMenuItem: NSMenuItem!
+    private var handsFreeMenuItem: NSMenuItem!
     private let hotkey = HotkeyManager()
     private let audio = AudioCapture()
     private var deepgram: DeepgramClient?
@@ -15,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cleanupEnabled = true
     private var soundsEnabled = true
     private var sessionID = 0
+    private var handsFreeLocked = false
+    private var lastHandsFreeUnlock = Date.distantPast
     private var recordingStartedAt: Date?
     private var durations: [Int: Double] = [:]
     private var historyWindow: NSWindow?
@@ -40,8 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestPermissions()
         audio.warmUp()
 
-        hotkey.onPress = { [weak self] in self?.startDictation() }
-        hotkey.onRelease = { [weak self] in self?.stopDictation() }
+        hotkey.onPress = { [weak self] in self?.hotkeyPressed() }
+        hotkey.onRelease = { [weak self] in self?.hotkeyReleased() }
+        hotkey.onLockCombo = { [weak self] in self?.lockComboPressed() }
         startHotkey(firstAttempt: true)
     }
 
@@ -59,6 +63,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
             self?.startHotkey(firstAttempt: false)
         }
+    }
+
+    // MARK: - Hotkey handling
+
+    /// Right ⌥ down: start push-to-talk — or, if hands-free is locked, stop it.
+    private func hotkeyPressed() {
+        if handsFreeLocked {
+            setHandsFree(false)
+        } else {
+            startDictation()
+        }
+    }
+
+    /// Right ⌥ up: stop push-to-talk unless hands-free locked it on.
+    private func hotkeyReleased() {
+        guard !handsFreeLocked else { return }
+        stopDictation()
+    }
+
+    /// ⌥+Space: toggle hands-free lock. When the combo uses the right ⌥,
+    /// the ⌥-down has already fired hotkeyPressed — if that just unlocked,
+    /// swallow this Space so the same keystroke doesn't re-lock.
+    private func lockComboPressed() {
+        if !handsFreeLocked, Date().timeIntervalSince(lastHandsFreeUnlock) < 0.8 { return }
+        setHandsFree(!handsFreeLocked)
+    }
+
+    private func setHandsFree(_ on: Bool) {
+        if on {
+            guard !handsFreeLocked else { return }
+            if state != .recording { startDictation() }
+            handsFreeLocked = state == .recording  // lock only if recording actually started
+            if handsFreeLocked { Log.write("hands-free lock ON") }
+        } else {
+            guard handsFreeLocked else { return }
+            handsFreeLocked = false
+            lastHandsFreeUnlock = Date()
+            Log.write("hands-free lock OFF")
+            stopDictation()
+        }
+        updateHandsFreeMenuItem()
+    }
+
+    @objc private func toggleHandsFreeFromMenu() {
+        setHandsFree(!handsFreeLocked)
+    }
+
+    private func updateHandsFreeMenuItem() {
+        handsFreeMenuItem?.title = handsFreeLocked ? "Stop Hands-Free Dictation"
+                                                   : "Start Hands-Free Dictation"
+        handsFreeMenuItem?.state = handsFreeLocked ? .on : .off
+        updateStatusIcon()
     }
 
     // MARK: - Dictation flow
@@ -159,7 +215,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(withTitle: "Hold Right ⌥ to dictate", action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: "⌥ Space locks hands-free", action: nil, keyEquivalent: "")
         menu.addItem(.separator())
+        handsFreeMenuItem = NSMenuItem(title: "Start Hands-Free Dictation",
+                                       action: #selector(toggleHandsFreeFromMenu),
+                                       keyEquivalent: " ")
+        handsFreeMenuItem.keyEquivalentModifierMask = [.option]
+        handsFreeMenuItem.target = self
+        menu.addItem(handsFreeMenuItem)
         let historyItem = NSMenuItem(title: "Transcript History…",
                                      action: #selector(openHistory), keyEquivalent: "h")
         historyItem.target = self
@@ -190,7 +253,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .idle:
             symbol = "mic"; description = "SwiftFlow idle"; tint = nil
         case .recording:
-            symbol = "mic.fill"; description = "SwiftFlow recording"; tint = .systemRed
+            symbol = "mic.fill"
+            description = handsFreeLocked ? "SwiftFlow recording (hands-free)"
+                                          : "SwiftFlow recording"
+            tint = handsFreeLocked ? .systemPurple : .systemRed
         case .processing:
             symbol = "waveform"; description = "SwiftFlow processing"; tint = .systemOrange
         }
