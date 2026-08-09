@@ -1,23 +1,10 @@
 import SwiftUI
 import AppKit
 
-// MARK: - Frosted window background
+// MARK: - History tab
 
-private struct VisualEffectBackground: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .underWindowBackground
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
-    }
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
-}
-
-// MARK: - History window
-
-/// Production-style dictation history: frosted native background, stats row,
-/// searchable day-grouped feed, cards with hover actions and animated expansion.
+/// Searchable day-grouped dictation feed with expandable cards and
+/// hover actions. Hosted inside MainWindowView.
 struct HistoryView: View {
     @ObservedObject var store: TranscriptStore
     @State private var query = ""
@@ -42,7 +29,9 @@ struct HistoryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            searchField
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
             if filtered.isEmpty {
                 emptyState
             } else {
@@ -50,57 +39,6 @@ struct HistoryView: View {
             }
             footer
         }
-        .frame(minWidth: 480, minHeight: 520)
-        .background(VisualEffectBackground().ignoresSafeArea())
-    }
-
-    // MARK: Header
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(LinearGradient(colors: [.accentColor, .accentColor.opacity(0.65)],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 30, height: 30)
-                    Image(systemName: "waveform")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Dictation History")
-                        .font(.system(size: 16, weight: .semibold))
-                    Text("Everything you've spoken, saved on this Mac")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            statsRow
-            searchField
-        }
-        .padding(.top, 36)   // clears the traffic lights on the transparent title bar
-        .padding(.horizontal, 20)
-        .padding(.bottom, 14)
-    }
-
-    private var statsRow: some View {
-        HStack(spacing: 8) {
-            StatTile(value: store.entries.count.formatted(), label: "Transcripts",
-                     symbol: "text.quote")
-            StatTile(value: totalWords.formatted(), label: "Words", symbol: "textformat")
-            StatTile(value: Self.longDuration(totalSeconds), label: "Speaking time",
-                     symbol: "clock")
-        }
-    }
-
-    private var totalWords: Int {
-        store.entries.reduce(0) { $0 + $1.displayText.split(separator: " ").count }
-    }
-
-    private var totalSeconds: Double {
-        store.entries.reduce(0) { $0 + $1.duration }
     }
 
     private var searchField: some View {
@@ -283,42 +221,6 @@ struct HistoryView: View {
         if s < 60 { return "\(s)s" }
         if s < 3600 { return "\(s / 60)m \(s % 60)s" }
         return "\(s / 3600)h \((s % 3600) / 60)m"
-    }
-}
-
-// MARK: - Stat tile
-
-private struct StatTile: View {
-    let value: String
-    let label: String
-    let symbol: String
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 14)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(value)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
-                Text(label)
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.55))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 1)
-        )
     }
 }
 

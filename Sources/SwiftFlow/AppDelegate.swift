@@ -19,6 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var handsFreeLocked = false
     private var lastHandsFreeUnlock = Date.distantPast
     private var recordingStartedAt: Date?
+    private let hud = DictationHUD()
+    private let windowState = MainWindowState()
     private var durations: [Int: Double] = [:]
     private var historyWindow: NSWindow?
     private var state: State = .idle { didSet { updateStatusIcon() } }
@@ -42,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         requestPermissions()
         audio.warmUp()
+        audio.onLevel = { [weak self] level in self?.hud.pushLevel(level) }
 
         hotkey.onPress = { [weak self] in self?.hotkeyPressed() }
         hotkey.onRelease = { [weak self] in self?.hotkeyReleased() }
@@ -114,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         handsFreeMenuItem?.title = handsFreeLocked ? "Stop Hands-Free Dictation"
                                                    : "Start Hands-Free Dictation"
         handsFreeMenuItem?.state = handsFreeLocked ? .on : .off
+        hud.setHandsFree(handsFreeLocked)
         updateStatusIcon()
     }
 
@@ -134,11 +138,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state = .recording
         Log.write("hotkey pressed — recording")
         playSound("Pop")
+        hud.show(handsFree: handsFreeLocked)
 
         let client = DeepgramClient(apiKey: config.deepgramApiKey)
         deepgram = client
         client.onFinalTranscript = { [weak self] transcript in
             self?.handleTranscript(transcript, session: id, startedAt: startedAt)
+        }
+        client.onLiveTranscript = { [weak self] live in
+            guard let self, id == self.sessionID else { return }
+            self.hud.setText(live)
         }
         client.connect()
 
@@ -149,6 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.write("audio start FAILED: \(error.localizedDescription)")
             state = .idle
             deepgram = nil
+            hud.hide()
         }
     }
 
@@ -159,6 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             durations[sessionID] = Date().timeIntervalSince(startedAt)
         }
         Log.write("hotkey released — finishing")
+        hud.processing()
         audio.stop()
         deepgram?.finish()
     }
@@ -175,6 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if isCurrent {
                 playSound("Basso")  // nothing captured — let the user know
                 state = .idle
+                hud.hide()
             }
             return
         }
@@ -189,6 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if id == self.sessionID {
                     self.playSound("Tink")
                     self.state = .idle
+                    self.hud.hide()
                 }
             }
         } else {
@@ -198,6 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if isCurrent {
                 playSound("Tink")
                 state = .idle
+                hud.hide()
             }
         }
     }
@@ -227,6 +241,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                      action: #selector(openHistory), keyEquivalent: "h")
         historyItem.target = self
         menu.addItem(historyItem)
+        let insightsItem = NSMenuItem(title: "Insights…",
+                                      action: #selector(openInsights), keyEquivalent: "i")
+        insightsItem.target = self
+        menu.addItem(insightsItem)
+        let settingsItem = NSMenuItem(title: "Settings…",
+                                      action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
         menu.addItem(.separator())
         cleanupMenuItem = NSMenuItem(title: "AI Cleanup (Cerebras)",
                                      action: #selector(toggleCleanup), keyEquivalent: "")
@@ -268,9 +290,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.contentTintColor = tint
     }
 
-    @objc private func openHistory() {
+    @objc private func openHistory() { openWindow(tab: .history) }
+    @objc private func openInsights() { openWindow(tab: .insights) }
+    @objc private func openSettings() { openWindow(tab: .settings) }
+
+    private func openWindow(tab: MainWindowState.Tab) {
+        windowState.tab = tab
         if historyWindow == nil {
-            let hosting = NSHostingController(rootView: HistoryView(store: .shared))
+            let root = MainWindowView(
+                store: .shared,
+                state: windowState,
+                currentConfig: { [weak self] in
+                    self?.config ?? Config(deepgramApiKey: "", cerebrasApiKey: "",
+                                           cerebrasModel: nil, cleanupEnabled: nil,
+                                           soundsEnabled: nil)
+                },
+                onSaveConfig: { [weak self] in self?.applySettings($0) }
+            )
+            let hosting = NSHostingController(rootView: root)
             let window = NSWindow(contentViewController: hosting)
             window.title = "SwiftFlow"
             window.setContentSize(NSSize(width: 560, height: 680))
@@ -288,14 +325,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    private func applySettings(_ new: Config) {
+        config = new
+        cleanupEnabled = new.cleanupEnabled ?? true
+        soundsEnabled = new.soundsEnabled ?? true
+        cleanupMenuItem.state = cleanupEnabled ? .on : .off
+        soundsMenuItem.state = soundsEnabled ? .on : .off
+        new.save()
+        Log.write("settings saved (model \(new.cerebrasModel ?? "default"))")
+    }
+
     @objc private func toggleCleanup() {
         cleanupEnabled.toggle()
         cleanupMenuItem.state = cleanupEnabled ? .on : .off
+        config.cleanupEnabled = cleanupEnabled
+        config.save()
     }
 
     @objc private func toggleSounds() {
         soundsEnabled.toggle()
         soundsMenuItem.state = soundsEnabled ? .on : .off
+        config.soundsEnabled = soundsEnabled
+        config.save()
     }
 
     // MARK: - Permissions

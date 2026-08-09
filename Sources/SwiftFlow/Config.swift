@@ -18,4 +18,12 @@ struct Config: Codable {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try? decoder.decode(Config.self, from: data)
     }
+
+    func save() {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(self) else { return }
+        try? data.write(to: Self.path, options: .atomic)
+    }
 }

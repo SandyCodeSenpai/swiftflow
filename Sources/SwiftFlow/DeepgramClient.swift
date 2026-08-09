@@ -6,6 +6,9 @@ import Foundation
 /// if the user starts talking instantly.
 final class DeepgramClient: NSObject, URLSessionWebSocketDelegate {
     var onFinalTranscript: ((String) -> Void)?
+    /// Fires on every interim/final result with the best current text —
+    /// what the user has said so far. Drives the live HUD.
+    var onLiveTranscript: ((String) -> Void)?
 
     private var session: URLSession!
     private var task: URLSessionWebSocketTask?
@@ -82,12 +85,17 @@ final class DeepgramClient: NSObject, URLSessionWebSocketDelegate {
 
         let type = json["type"] as? String
         if type == "Results",
-           json["is_final"] as? Bool == true,
            let channel = json["channel"] as? [String: Any],
            let alternatives = channel["alternatives"] as? [[String: Any]],
-           let transcript = alternatives.first?["transcript"] as? String,
-           !transcript.trimmingCharacters(in: .whitespaces).isEmpty {
-            DispatchQueue.main.async { self.finals.append(transcript) }
+           let transcript = alternatives.first?["transcript"] as? String {
+            let isFinal = json["is_final"] as? Bool == true
+            let spoken = transcript.trimmingCharacters(in: .whitespaces)
+            DispatchQueue.main.async {
+                if isFinal, !spoken.isEmpty { self.finals.append(spoken) }
+                let live = isFinal ? self.finals.joined(separator: " ")
+                                   : (self.finals + [spoken]).joined(separator: " ")
+                if !live.isEmpty { self.onLiveTranscript?(live) }
+            }
         } else if type == "Metadata" {
             // Deepgram sends Metadata after CloseStream — transcription is done.
             DispatchQueue.main.async { self.complete() }
